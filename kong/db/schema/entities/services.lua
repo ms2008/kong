@@ -1,4 +1,5 @@
 local typedefs = require "kong.db.schema.typedefs"
+local url = require "socket.url"
 
 
 return {
@@ -20,6 +21,7 @@ return {
     { connect_timeout = typedefs.timeout { default = 60000 }, },
     { write_timeout   = typedefs.timeout { default = 60000 }, },
     { read_timeout    = typedefs.timeout { default = 60000 }, },
+    { tags            = typedefs.tags },
     -- { load_balancer = { type = "foreign", reference = "load_balancers" } },
   },
 
@@ -29,4 +31,24 @@ return {
                       then_field = "path",
                       then_match = { eq = ngx.null }}},
   },
+
+  shorthands = {
+    { url = function(sugar_url)
+              local parsed_url = url.parse(tostring(sugar_url))
+              if not parsed_url then
+                return
+              end
+
+              return {
+                protocol = parsed_url.scheme,
+                host = parsed_url.host,
+                port = tonumber(parsed_url.port) or
+                       parsed_url.port or
+                       (parsed_url.scheme == "http" and 80) or
+                       (parsed_url.scheme == "https" and 443) or
+                       nil,
+                path = parsed_url.path,
+              }
+            end },
+  }
 }

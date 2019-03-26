@@ -195,7 +195,7 @@ end
 
 local create_balancer
 do
-  local ring_balancer = require "resty.dns.balancer"
+  local ring_balancer = require "resty.dns.balancer.ring"
 
   local create_healthchecker
   do
@@ -206,10 +206,11 @@ do
     -- or removed to a balancer.
     -- @param balancer the ring balancer object that triggers this callback.
     -- @param action "added" or "removed"
+    -- @param address balancer address object
     -- @param ip string
     -- @param port number
     -- @param hostname string
-    local function ring_balancer_callback(balancer, action, ip, port, hostname)
+    local function ring_balancer_callback(balancer, action, address, ip, port, hostname)
       local healthchecker = healthcheckers[balancer]
       if action == "added" then
         local ok, err = healthchecker:add_target(ip, port, hostname)
@@ -264,21 +265,24 @@ do
       -- The lifetime of the healthchecker is based on that of the balancer.
       healthcheckers[balancer] = hc
 
-      balancer.report_http_status = function(ip, port, status)
+      balancer.report_http_status = function(handle, status)
+        local ip, port = handle.address.ip, handle.address.port
         local _, err = hc:report_http_status(ip, port, status, "passive")
         if err then
           log(ERR, "[healthchecks] failed reporting status: ", err)
         end
       end
 
-      balancer.report_tcp_failure = function(ip, port)
+      balancer.report_tcp_failure = function(handle)
+        local ip, port = handle.address.ip, handle.address.port
         local _, err = hc:report_tcp_failure(ip, port, nil, "passive")
         if err then
           log(ERR, "[healthchecks] failed reporting status: ", err)
         end
       end
 
-      balancer.report_timeout = function(ip, port)
+      balancer.report_timeout = function(handle)
+        local ip, port = handle.address.ip, handle.address.port
         local _, err = hc:report_timeout(ip, port, "passive")
         if err then
           log(ERR, "[healthchecks] failed reporting status: ", err)
@@ -466,15 +470,15 @@ end
 
 local get_all_upstreams
 do
-  ------------------------------------------------------------------------------
-  -- Implements a simple dictionary with all upstream-ids indexed
-  -- by their name.
-  -- @return The upstreams dictionary, a map with upstream names as string keys
-  -- and upstream entity tables as values, or nil+error
   local function load_upstreams_dict_into_memory()
     local upstreams_dict = {}
-    for up in singletons.db.upstreams:each(1000) do
     -- build a dictionary, indexed by the upstream name
+    for up, err in singletons.db.upstreams:each(1000) do
+      if err then
+        log(CRIT, "could not obtain list of upstreams: ", err)
+        return nil
+      end
+
       upstreams_dict[up.name] = up.id
     end
     return upstreams_dict
@@ -482,19 +486,22 @@ do
   _load_upstreams_dict_into_memory = load_upstreams_dict_into_memory
 
 
+  local opts = { neg_ttl = 10 }
+
+
   ------------------------------------------------------------------------------
-  -- Finds and returns an upstream entity. This function covers
-  -- caching, invalidation, db access, et al.
-  -- @param upstream_name string.
-  -- @return upstream table, or `false` if not found, or nil+error
+  -- Implements a simple dictionary with all upstream-ids indexed
+  -- by their name.
+  -- @return The upstreams dictionary (a map with upstream names as string keys
+  -- and upstream entity tables as values), or nil+error
   get_all_upstreams = function()
-    local upstreams_dict, err = singletons.cache:get("balancer:upstreams", nil,
+    local upstreams_dict, err = singletons.cache:get("balancer:upstreams", opts,
                                                 load_upstreams_dict_into_memory)
     if err then
       return nil, err
     end
 
-    return upstreams_dict
+    return upstreams_dict or {}
   end
 end
 
@@ -718,7 +725,7 @@ local function init()
 
   local upstreams, err = get_all_upstreams()
   if not upstreams then
-    log(CRIT, "failed loading initial list of upstreams: " .. err)
+    log(CRIT, "failed loading initial list of upstreams: ", err)
     return
   end
 
@@ -794,16 +801,17 @@ local function execute(target, ctx)
     end
   end
 
-  local ip, port, hostname
+  local ip, port, hostname, handle
   if balancer then
     -- have to invoke the ring-balancer
-    ip, port, hostname = balancer:getPeer(hash_value,
-                                          target.try_count,
-                                          dns_cache_only)
+    ip, port, hostname, handle = balancer:getPeer(dns_cache_only,
+                                          target.balancer_handle,
+                                          hash_value)
     if not ip and port == "No peers are available" then
       return nil, "failure to get a peer from the ring-balancer", 503
     end
     target.hash_value = hash_value
+    target.balancer_handle = handle
 
   else
     -- have to do a regular DNS lookup

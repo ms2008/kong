@@ -4,7 +4,7 @@ local pl_stringx = require "pl.stringx"
 local constants = require "kong.constants"
 local pl_pretty = require "pl.pretty"
 local pl_config = require "pl.config"
-local ciphers = require "kong.tools.ciphers"
+local http_tls = require "http.tls"
 local pl_file = require "pl.file"
 local pl_path = require "pl.path"
 local tablex = require "pl.tablex"
@@ -16,6 +16,13 @@ local ip = require "resty.mediador.ip"
 
 local fmt = string.format
 local concat = table.concat
+
+
+local cipher_suites = {
+  modern = http_tls.modern_cipher_list,
+  intermediate = http_tls.intermediate_cipher_list,
+  old = http_tls.old_cipher_list,
+}
 
 
 local DEFAULT_PATHS = {
@@ -39,6 +46,8 @@ local HEADER_KEY_TO_NAME = {
 local DYNAMIC_KEY_PREFIXES = {
   ["nginx_http_directives"] = "nginx_http_",
   ["nginx_proxy_directives"] = "nginx_proxy_",
+  ["nginx_stream_directives"] = "nginx_stream_",
+  ["nginx_sproxy_directives"] = "nginx_sproxy_",
   ["nginx_admin_directives"] = "nginx_admin_",
 }
 
@@ -104,7 +113,7 @@ local CONF_INFERENCES = {
                          }
                        },
 
-  database = { enum = { "postgres", "cassandra" }  },
+  database = { enum = { "postgres", "cassandra", "off" }  },
   pg_port = { typ = "number" },
   pg_timeout = { typ = "number" },
   pg_password = { typ = "string" },
@@ -367,11 +376,11 @@ local function check_and_infer(conf)
   end
 
   if conf.ssl_cipher_suite ~= "custom" then
-    local pok, perr = pcall(function()
-      conf.ssl_ciphers = ciphers(conf.ssl_cipher_suite)
-    end)
-    if not pok then
-      errors[#errors + 1] = perr
+    local list = cipher_suites[conf.ssl_cipher_suite]
+    if list then
+      conf.ssl_ciphers = list
+    else
+      errors[#errors + 1] = "Undefined cipher suite " .. tostring(conf.ssl_cipher_suite)
     end
   end
 
