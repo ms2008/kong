@@ -1296,7 +1296,7 @@ local function get_version()
 end
 
 
-local function start_kong(env, tables, preserve_prefix)
+local function start_kong(env, tables, preserve_prefix, fixtures)
   if tables ~= nil and type(tables) ~= "table" then
     error("arg #2 must be a list of tables to truncate")
   end
@@ -1306,6 +1306,18 @@ local function start_kong(env, tables, preserve_prefix)
     local ok, err = prepare_prefix(prefix)
     if not ok then return nil, err end
   end
+
+  os.execute(('rm -f "%s/*.http_mock" 2>&1 1>/dev/null'):format(prefix))
+  for filename, contents in pairs((fixtures or {}).http_mock or {}) do
+    filename = prefix .. "/" .. filename .. ".http_mock"
+    assert(pl_utils.writefile(filename, contents))
+  end
+  os.execute(('rm -f "%s/*.stream_mock" 2>&1 1>/dev/null'):format(prefix))
+  for filename, contents in pairs((fixtures or {}).stream_mock or {}) do
+    filename = prefix .. "/" .. filename .. ".stream_mock"
+    assert(pl_utils.writefile(filename, contents))
+  end
+
 
   truncate_tables(db, tables)
 
